@@ -1,0 +1,1003 @@
+\documentclass[12pt,oneside]{report}
+
+% =========================================
+%          PACKAGES & BASIC SETUP
+% =========================================
+
+\usepackage[a4paper,margin=3cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern} % or Times if your uni requires it
+%\usepackage{times}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[utf8]{inputenc}
+\usepackage{mathtools}
+\usepackage{siunitx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.misc}
+\usepackage{listings}
+\usepackage{color}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage[noabbrev,nameinlink]{cleveref}
+\usepackage{tocbibind} % include refs in TOC
+
+% =========================================
+%                 HYPERREF
+% =========================================
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue,
+    pdftitle={QuantumSafe-SMB-Link: Post-Quantum Hybrid SMB Tunnel},
+    pdfauthor={Your Name},
+    pdfcreator={LaTeX}
+}
+
+% =========================================
+%            LISTINGS FOR RUST
+% =========================================
+
+\definecolor{lightgray}{gray}{0.95}
+\definecolor{darkgray}{gray}{0.25}
+\definecolor{purple}{rgb}{0.5,0,0.5}
+\definecolor{myblue}{rgb}{0,0,0.5}
+
+\lstdefinelanguage{Rust}{
+  keywords={break, continue, else, for, if, in, loop, match, while,
+    as, const, fn, let, move, mut, ref, return, static, struct, trait,
+    type, unsafe, use, where, crate, impl, dyn, pub, enum, async, await},
+  keywordstyle=\color{purple}\bfseries,
+  ndkeywords={u8, u16, u32, u64, usize, i32, i64, bool, String, Vec, Option, Result, Box, Arc, TcpStream},
+  ndkeywordstyle=\color{myblue}\bfseries,
+  identifierstyle=\color{black},
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  commentstyle=\color{darkgray}\itshape,
+  stringstyle=\color{blue},
+  morestring=[b]",
+}
+
+\lstdefinestyle{ruststyle}{
+    language=Rust,
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{lightgray},
+    showstringspaces=false,
+    tabsize=4,
+    breaklines=true,
+    frame=single,
+    framerule=0.3pt
+}
+
+\lstset{style=ruststyle}
+
+% =========================================
+%          THEOREM-LIKE ENVIRONMENTS
+% =========================================
+
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{theorem}{Theorem}[chapter]
+\newtheorem{lemma}{Lemma}[chapter]
+
+% =========================================
+%                  MACROS
+% =========================================
+
+\newcommand{\Kyber}{\textsf{ML-KEM-768}}
+\newcommand{\Dilithium}{\textsf{ML-DSA-2}}
+\newcommand{\XDH}{\textsf{X25519}}
+\newcommand{\ChaCha}{\textsf{ChaCha20-Poly1305}}
+\newcommand{\qsl}{\textsf{QuantumSafe-SMB-Link}}
+
+% =========================================
+%                DOCUMENT
+% =========================================
+
+\begin{document}
+
+% =========================================
+%               TITLE PAGE
+% =========================================
+
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\Large Applied Cryptography -- CMPS 297AD/396AI \par}
+    \vspace{1cm}
+    {\huge\bfseries QuantumSafe-SMB-Link\par}
+    \vspace{0.4cm}
+    {\Large A Post-Quantum Hybrid Tunnel for SMB\par}
+    \vspace{2.5cm}
+
+    {\Large Your Name\par}
+    \vspace{0.5cm}
+    {\large Department of Computer Science\par}
+    {\large American University of Beirut\par}
+
+    \vfill
+
+    {\large \today\par}
+\end{titlepage}
+
+\pagenumbering{roman}
+
+% =========================================
+%                 ABSTRACT
+% =========================================
+
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+The advent of large-scale quantum computers threatens the public-key cryptography currently used to secure network protocols and tunnels. In particular, elliptic-curve Diffie--Hellman (ECDH) and RSA, which protect many VPNs and SMB tunnels, can be broken by Shor's algorithm. To address this risk, NIST has standardized lattice-based post-quantum primitives, including \Kyber{} for key encapsulation and \Dilithium{} for digital signatures.
+
+This project presents \emph{\qsl{}}, a Rust implementation of a hybrid, post-quantum-aware tunnel for the Server Message Block (SMB) protocol. On top of TCP, \qsl{} runs a custom handshake that negotiates capabilities, performs a hybrid key establishment using \Kyber{} and optional \XDH{}, and derives symmetric keys via an HKDF-based key schedule. SMB traffic is then carried inside a simple encrypted framing layer protected by the \ChaCha{} authenticated-encryption scheme. Detached \Dilithium{} signatures are implemented and can be used to authenticate handshake transcripts.
+
+The report documents the protocol design, the Rust implementation architecture, and the migration rationale from classical to hybrid post-quantum security. It also analyzes performance and security trade-offs, discusses downgrade resistance and hybrid security guarantees, and outlines how this design can guide real-world migration of SMB-based infrastructures to post-quantum cryptography.
+
+% =========================================
+%               ACKNOWLEDGMENTS
+% =========================================
+
+\chapter*{Acknowledgments}
+\addcontentsline{toc}{chapter}{Acknowledgments}
+
+I would like to thank the course instructor, Dr.\ Nadim Kobeissi, for designing a project that bridges theoretical post-quantum cryptography with practical software engineering, and for the guidance provided throughout the semester.
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+\clearpage
+\pagenumbering{arabic}
+
+% =========================================
+%           CHAPTER 1: INTRODUCTION
+% =========================================
+
+\chapter{Introduction}
+\label{chap:intro}
+
+\section{Motivation}
+
+Server Message Block (SMB) is widely used in organizational networks for file sharing, printer sharing, and networked storage. In many deployments, SMB traffic is either implicitly trusted within a local network or protected using classical VPNs that rely on elliptic-curve Diffie--Hellman (ECDH) or RSA. These classical public-key schemes are vulnerable to quantum attacks: a sufficiently powerful quantum computer running Shor's algorithm could recover private keys and decrypt recorded traffic.
+
+The threat is particularly relevant for \emph{record-now, decrypt-later} adversaries, who capture encrypted data today with the expectation of decrypting it once quantum computers mature. SMB traffic often contains sensitive files and credentials with long-term confidentiality requirements, making it an important candidate for post-quantum migration.
+
+At the same time, replacing widely deployed protocols is challenging. Full replacement of TLS or SMB stacks is not always feasible. Instead, many organizations rely on protocol-agnostic tunnels: programs that accept cleartext connections (e.g., SMB) and forward them through an encrypted channel. Migrating such tunnels to post-quantum security requires integrating new primitives, designing hybrid modes, and maintaining backward compatibility.
+
+\section{Project Overview}
+
+This project implements \emph{\qsl{}}, a proof-of-concept SMB tunnel that uses NIST-standardized post-quantum algorithms in a hybrid design. The tunnel is built in Rust and consists of:
+
+\begin{itemize}
+    \item A \textbf{hybrid handshake} that negotiates supported KEM and signature algorithms, performs \Kyber{} encapsulation, and optionally performs an \XDH{} ECDH exchange.
+    \item A \textbf{key schedule} that combines classical and post-quantum shared secrets via HKDF over SHA-256 to derive bidirectional traffic keys.
+    \item An \textbf{authenticated encryption layer} based on \ChaCha{}, using per-frame nonces and associated data (AAD).
+    \item A \textbf{length-prefixed framing layer} that carries encrypted SMB payloads over an established TCP stream.
+    \item A set of \textbf{Rust modules} that clearly separate networking, cryptographic operations, and protocol logic.
+\end{itemize}
+
+The codebase is organized to be educational: it exposes the protocol machinery explicitly, rather than hiding it behind generic TLS libraries. At the same time, the design borrows concepts from TLS~1.3 such as transcripts and HKDF-based key schedules.
+
+\section{Contributions}
+
+The contributions of this project are:
+
+\begin{enumerate}
+    \item \textbf{Protocol Design:} A concrete, documented wire protocol for a post-quantum / classical hybrid handshake aimed at SMB tunneling.
+    \item \textbf{Implementation:} A full Rust implementation using production-quality crates for \Kyber{}, \Dilithium{}, \XDH{}, \ChaCha{}, and HKDF.
+    \item \textbf{Documentation \& Analysis:} A structured explanation of the migration rationale, implementation details, performance considerations, and a security analysis of the design.
+\end{enumerate}
+
+\section{Document Structure}
+
+The rest of this report is organized as follows:
+
+\begin{itemize}
+    \item \Cref{chap:background} covers the cryptographic background and the primitives used.
+    \item \Cref{chap:requirements} defines system and security requirements.
+    \item \Cref{chap:design} describes the protocol, handshake messages, and key schedule in detail.
+    \item \Cref{chap:implementation} documents the Rust modules and key functions.
+    \item \Cref{chap:performance} discusses performance and provides a structure for presenting benchmark results.
+    \item \Cref{chap:security} analyzes the security of the hybrid design and discusses downgrade resistance and implementation concerns.
+    \item \Cref{chap:conclusion} concludes and outlines future work.
+    \item Appendices provide wire-format details and CLI usage examples.
+\end{itemize}
+
+% =========================================
+%           CHAPTER 2: BACKGROUND
+% =========================================
+
+\chapter{Background}
+\label{chap:background}
+
+\section{Threat Model and Quantum Attacks}
+
+We consider a standard Dolev--Yao network attacker with full control over the network: the adversary can intercept, delay, drop, modify, and inject packets. Additionally, we consider a \emph{record-now, decrypt-later} adversary who stores ciphertexts and later obtains access to a quantum computer.
+
+Classical public-key schemes such as RSA, Diffie--Hellman, and elliptic-curve Diffie--Hellman rely on problems (factoring, discrete logarithms) that are efficiently solvable by quantum computers running Shor's algorithm. This breaks both confidentiality and authentication.
+
+For SMB tunnels that protect long-lived or sensitive data, we therefore require key establishment mechanisms that remain secure in the presence of quantum attackers.
+
+\section{Post-Quantum Primitives}
+
+\subsection{ML-KEM-768 (\Kyber{})}
+
+\Kyber{} is a lattice-based KEM selected by NIST for standardization. It provides three parameter sets; this project uses the \texttt{kyber768} variant via the \texttt{pqcrypto-kyber} crate. The main algorithms are:
+
+\begin{itemize}
+    \item \textsf{KeyGen}: $(pk, sk) \gets \textsf{KeyGen}()$.
+    \item \textsf{Encaps}: Given $pk$, output $(ct, ss)$, where $ss$ is the shared secret.
+    \item \textsf{Decaps}: Given $ct$ and $sk$, recover $ss$.
+\end{itemize}
+
+The shared secret $ss$ is used as part of the input keying material to HKDF.
+
+\subsection{ML-DSA-2 (\Dilithium{})}
+
+\Dilithium{} is a lattice-based signature scheme. This project uses the \texttt{dilithium2} variant via the \texttt{pqcrypto-dilithium} crate. The API (as wrapped by \texttt{sig.rs}) is:
+
+\begin{itemize}
+    \item \texttt{generate\_keys()} → (pk, sk)
+    \item \texttt{sign\_detached(msg, sk)} → sig
+    \item \texttt{verify\_detached(msg, sigma, pk)} → success/failure
+ success/failure
+\end{itemize}
+
+
+
+
+
+
+The current codebase includes these helpers and tests; actual integration into the handshake for authentication is summarized in \Cref{chap:security} as future work.
+
+\section{Classical Primitives}
+
+\subsection{X25519 (\XDH{})}
+
+For hybrid operation, the project uses X25519 via the \texttt{x25519-dalek} crate. Each side generates an ephemeral secret and public key:
+
+\[
+    \textsf{pk} = \textsf{X25519}(sk, G),
+\]
+and the shared secret is:
+
+\[
+    ss_{\text{classical}} = \textsf{X25519}(sk_{\text{local}}, pk_{\text{peer}}).
+\]
+
+\subsection{Authenticated Encryption (\ChaCha{})}
+
+Tunnel data is protected with \ChaCha{} using the \texttt{chacha20poly1305} crate. It provides authenticated encryption with a 256-bit key and 96-bit nonce. In \texttt{aead.rs}, the functions are:
+
+\begin{itemize}
+    \item \texttt{aead\_seal(key, nonce, aad, plaintext)}.
+    \item \texttt{aead\_open(key, nonce, aad, ciphertext)}.
+\end{itemize}
+
+\subsection{HKDF over SHA-256}
+
+Key derivation is based on HKDF with SHA-256, implemented via the \texttt{hkdf} crate. The transcript hash is used as the salt; the concatenation of classical and PQ shared secrets is used as input keying material.
+
+% =========================================
+%        CHAPTER 3: SYSTEM REQUIREMENTS
+% =========================================
+
+\chapter{System and Protocol Requirements}
+\label{chap:requirements}
+
+\section{Functional Requirements}
+
+The \qsl{} system is designed to satisfy the following functional requirements:
+
+\begin{itemize}
+    \item Act as an SMB tunnel: accept incoming SMB connections on a local address and forward them to a configured remote SMB server through an encrypted channel.
+    \item Perform a key-establishment handshake before any SMB data is exchanged.
+    \item Support both hybrid (\XDH{} + \Kyber{}) and pure post-quantum (\Kyber{}-only) modes.
+    \item Provide a simple command-line interface to configure server/client roles, addresses, and cryptographic options.
+\end{itemize}
+
+\section{Security Requirements}
+
+The security requirements are:
+
+\begin{itemize}
+    \item \textbf{Confidentiality:} SMB payloads must remain confidential against network attackers.
+    \item \textbf{Integrity:} Modifications to tunnel traffic must be detected and rejected.
+    \item \textbf{Forward secrecy:} Compromise of long-term keys must not reveal past session keys.
+    \item \textbf{Post-quantum security:} Session keys should remain secure against quantum attacks due to the \Kyber{} component.
+    \item \textbf{Downgrade resistance:} When both parties support PQ/hybrid suites, the protocol should not silently fall back to weaker classical-only modes.
+\end{itemize}
+
+\section{Non-Functional Requirements}
+
+\begin{itemize}
+    \item \textbf{Performance:} The handshake overhead must be acceptable, and steady-state tunnel throughput should approach that of raw TCP.
+    \item \textbf{Portability:} The Rust code should compile and run on major operating systems supported by the Rust toolchain.
+    \item \textbf{Robustness:} Invalid or malformed handshake messages must be handled gracefully, with precise error messages for debugging.
+\end{itemize}
+
+% =========================================
+%          CHAPTER 4: PROTOCOL DESIGN
+% =========================================
+
+\chapter{Protocol Design}
+\label{chap:design}
+
+\section{High-Level Flow}
+
+The \qsl{} protocol operates over a single TCP connection, with the following phases:
+
+\begin{enumerate}
+    \item \textbf{Handshake phase:} Client and server exchange \texttt{ClientHello} and \texttt{ServerHello} messages, negotiate a cryptographic suite, perform hybrid key establishment, and derive symmetric keys.
+    \item \textbf{Data phase:} SMB payloads are encrypted, framed, and relayed between tunnel endpoints.
+\end{enumerate}
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[node distance=1.4cm, >=latex]
+        \node (client) {Client};
+        \node[right=6cm of client] (server) {Server};
+
+        \draw[->] (client) -- node[above]{ClientHello} (server);
+        \draw[->] (server) -- node[above]{ServerHello} (client);
+        \draw[->] (client) -- node[above]{ClientAuth (optional)} (server);
+
+        \node[below=1.8cm of client, text width=6cm, align=left] (cstate)
+            {Client: derive classical/PQ shared secrets, compute transcript hash, derive keys};
+        \node[below=1.8cm of server, text width=6cm, align=left] (sstate)
+            {Server: derive classical/PQ shared secrets, compute transcript hash, derive keys};
+
+        \draw[->] (client) -- (cstate);
+        \draw[->] (server) -- (sstate);
+    \end{tikzpicture}
+    \caption{High-level handshake flow between client and server.}
+    \label{fig:handshake-high}
+\end{figure}
+
+\section{Message Types and Magic Values}
+
+\texttt{kem.rs} defines constant magic values and protocol version:
+
+\begin{itemize}
+    \item \texttt{CLIENT\_HELLO\_MAGIC = "QSLH"}.
+    \item \texttt{SERVER\_HELLO\_MAGIC = "QSLS"}.
+    \item \texttt{CLIENT\_AUTH\_MAGIC = "QSLA"}.
+    \item \texttt{PROTOCOL\_VERSION = 1}.
+\end{itemize}
+
+Each handshake message starts with a magic constant and protocol version, followed by a length-prefixed payload. \Cref{app:wire} provides the binary layout.
+
+\section{Capabilities and Algorithm Negotiation}
+
+Algorithm capabilities are represented by the \texttt{Capabilities} struct:
+
+\begin{itemize}
+    \item A list of supported KEM algorithms (\Kyber{}, future variants).
+    \item A list of supported signature algorithms (\Dilithium{}, etc.).
+    \item A boolean \texttt{hybrid} flag.
+    \item A boolean \texttt{pq\_required} flag.
+\end{itemize}
+
+These are encoded as TLV (type--length--value) pairs, with tags:
+
+\begin{itemize}
+    \item \texttt{TLV\_KEM\_LIST = 0x0001}.
+    \item \texttt{TLV\_SIG\_LIST = 0x0002}.
+    \item \texttt{TLV\_HYBRID = 0x0003}.
+    \item \texttt{TLV\_PQ\_REQUIRED = 0x0004}.
+\end{itemize}
+
+The decoding logic checks alignment and length, rejecting malformed messages (e.g., KEM list not aligned to 2-byte IDs).
+
+The server selects a \texttt{ChosenSuite} that belongs to the intersection of client and server capabilities. The \texttt{pq\_required} flag prevents the server from selecting a non-PQ suite when the client insists on post-quantum security.
+
+\section{ClientHello and ServerHello}
+
+\subsection{ClientHello Structure}
+
+The \texttt{ClientHello} struct (simplified) is:
+
+\begin{lstlisting}
+pub struct ClientHello {
+    pub random: [u8; 32],
+    pub x_pub: [u8; 32],
+    pub kyber_pub: Vec<u8>,
+    pub caps: Capabilities,
+    pub caps_encoded: Vec<u8>,
+    // internal: optional EphemeralSecret and Kyber secret
+}
+\end{lstlisting}
+
+\begin{itemize}
+    \item \texttt{random} is filled with 32 bytes from \texttt{OsRng}.
+    \item \texttt{x\_pub} is the client's X25519 public key (zeros if hybrid is disabled).
+    \item \texttt{kyber\_pub} is the serialized \Kyber{} public key.
+    \item \texttt{caps} and \texttt{caps\_encoded} represent capabilities and their binary encoding.
+\end{itemize}
+
+\subsection{ServerHello Structure}
+
+The \texttt{ServerHello} struct is:
+
+\begin{lstlisting}
+pub struct ServerHello {
+    pub random: [u8; 32],
+    pub x_pub: [u8; 32],
+    pub kyber_ct: Vec<u8>,
+    pub chosen_suite: ChosenSuite,
+    pub chosen_suite_encoded: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+\end{lstlisting}
+
+\begin{itemize}
+    \item \texttt{random} is server-generated.
+    \item \texttt{x\_pub} is server X25519 public key (zeros when not hybrid).
+    \item \texttt{kyber\_ct} is the Kyber ciphertext encapsulated to the client's public key.
+    \item \texttt{chosen\_suite} describes the selected KEM/signature suite and hybrid flag.
+    \item \texttt{signature} is reserved for future Dilithium signatures over the transcript.
+\end{itemize}
+
+\section{Shared Secrets and Transcript Hash}
+
+The \texttt{Shared} struct contains:
+
+\begin{lstlisting}
+pub struct Shared {
+    pub classical: Option<[u8; 32]>,
+    pub pq: Vec<u8>,
+}
+\end{lstlisting}
+
+\begin{itemize}
+    \item \texttt{classical} is \texttt{Some(shared\_x25519)} in hybrid mode and \texttt{None} otherwise.
+    \item \texttt{pq} is the Kyber shared secret.
+\end{itemize}
+
+The handshake transcript consists of a deterministic concatenation of:
+
+\begin{enumerate}
+    \item Client random.
+    \item Server random.
+    \item Client and server X25519 public keys.
+    \item Client Kyber public key and server Kyber ciphertext.
+    \item Encoded capabilities and chosen suite.
+\end{enumerate}
+
+This transcript is hashed with SHA-256 and used as the salt for HKDF. The input keying material is constructed by concatenating the classical shared secret (if present) and the PQ shared secret.
+
+% =========================================
+%      CHAPTER 5: IMPLEMENTATION IN RUST
+% =========================================
+
+\chapter{Implementation in Rust}
+\label{chap:implementation}
+
+\section{Project Structure}
+
+The repository contains the following top-level elements:
+
+\begin{itemize}
+    \item \texttt{Cargo.toml}: crate metadata and dependencies.
+    \item \texttt{src/main.rs}: CLI and entry point.
+    \item \texttt{src/net.rs}: networking logic and tunnel orchestration.
+    \item \texttt{src/kem.rs}: handshake and hybrid KEM implementation.
+    \item \texttt{src/aead.rs}: HKDF-based session keys and AEAD helpers.
+    \item \texttt{src/frame.rs}: frame format for encrypted records.
+    \item \texttt{src/sig.rs}: Dilithium signature wrapper.
+    \item \texttt{src/crypto.rs}: legacy helpers (kept for reference).
+    \item \texttt{docs/protocol.md}: informal documentation of the protocol.
+\end{itemize}
+
+\section{Command-Line Interface (main.rs)}
+
+The CLI uses the \texttt{clap} crate with subcommands for client and server roles:
+
+\begin{lstlisting}
+#[derive(Parser)]
+#[command(name = "QuantumSafe-SMB-Link", version,
+          about = "Post-quantum SMB tunnel")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Server(ServerOpts),
+    Client(ClientOpts),
+}
+\end{lstlisting}
+
+Both \texttt{ServerOpts} and \texttt{ClientOpts} (defined with \texttt{\#[derive(Args)]}) include:
+
+\begin{itemize}
+    \item A local bind/dial address (\texttt{listen} or \texttt{dial}).
+    \item A remote SMB server address (\texttt{forward}).
+    \item Paths to Dilithium keys (for future authenticated mode).
+    \item Flags for hybrid mode and PQ requirement.
+\end{itemize}
+
+The function \texttt{init\_tracing()} configures \texttt{tracing-subscriber} with an \texttt{EnvFilter}, enabling log-level control via environment variables. Keys are loaded with:
+
+\begin{lstlisting}
+fn load_key(path: &PathBuf) -> Result<Arc<[u8]>> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read key {:?}", path))?;
+    Ok(Arc::from(bytes))
+}
+\end{lstlisting}
+
+\section{Networking and Tunnel Logic (net.rs)}
+
+\subsection{Server Mode}
+
+In server mode, \texttt{run\_server} binds a \texttt{TcpListener} and accepts incoming tunnel connections:
+
+\begin{itemize}
+    \item For each accepted connection:
+    \begin{enumerate}
+        \item Perform the server-side handshake via \texttt{server\_handshake}.
+        \item Connect to the target SMB server.
+        \item Start bidirectional encrypted pumping of data using \texttt{pump\_streams}.
+    \end{enumerate}
+\end{itemize}
+
+\subsection{Client Mode}
+
+In client mode, \texttt{run\_client} listens for local SMB connections, and for each:
+
+\begin{enumerate}
+    \item Connects to the remote tunnel peer.
+    \item Executes \texttt{client\_handshake}.
+    \item Pipes SMB data between the local client and the remote tunnel using the derived keys.
+\end{enumerate}
+
+\subsection{Handshake Functions}
+
+The networking layer calls into \texttt{kem.rs} as follows:
+
+\begin{itemize}
+    \item \texttt{client\_handshake(stream, config)}:
+    \begin{enumerate}
+        \item Build \texttt{ClientHello} using \texttt{ClientHello::new}.
+        \item Send encoded \texttt{ClientHello}.
+        \item Receive and decode \texttt{ServerHello}.
+        \item Compute \texttt{Shared} secrets and derive \texttt{SessionKeys}.
+    \end{enumerate}
+    \item \texttt{server\_handshake(stream, config)}:
+    \begin{enumerate}
+        \item Read and decode \texttt{ClientHello}.
+        \item Generate Kyber and X25519 components.
+        \item Build \texttt{ServerHello} and send it.
+        \item Derive \texttt{Shared} and \texttt{SessionKeys}.
+    \end{enumerate}
+\end{itemize}
+
+The handshake functions also compute associated data (AAD) for AEAD, typically including a hash of the transcript to bind the data channel to the negotiated keys.
+
+\subsection{Framed Pumping}
+
+The function \texttt{pump\_streams} splits the tunnel and target TCP streams into read/write halves and concurrently:
+
+\begin{itemize}
+    \item Reads plaintext from the SMB side, encrypts it into a frame, and writes it to the tunnel.
+    \item Reads encrypted frames from the tunnel, decrypts them, and writes plaintext to the SMB side.
+\end{itemize}
+
+Nonce management is handled by \texttt{NonceCounter} from \texttt{aead.rs}, ensuring that each frame uses a unique nonce.
+
+\section{Authenticated Encryption and Key Schedule (aead.rs)}
+
+\subsection{SessionKeys and Roles}
+
+The \texttt{SessionKeys} struct stores transmit (tx) and receive (rx) keys:
+
+\begin{lstlisting}
+#[derive(Clone)]
+pub struct SessionKeys {
+    pub tx: [u8; 32],
+    pub rx: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionRole {
+    Client,
+    Server,
+}
+\end{lstlisting}
+
+The function \texttt{derive\_session\_keys(shared, transcript\_salt, role)}:
+
+\begin{itemize}
+    \item Builds input keying material by concatenating classical and PQ secrets.
+    \item Initializes HKDF with the transcript salt and IKM.
+    \item Expands to two 256-bit keys labeled \texttt{"QuantumSafe tx"} and \texttt{"QuantumSafe rx"}.
+    \item Swaps roles so that the client's \texttt{tx} matches the server's \texttt{rx}, and vice versa.
+\end{itemize}
+
+\subsection{NonceCounter}
+
+\texttt{NonceCounter} wraps a 64-bit counter and exposes:
+
+\begin{itemize}
+    \item \texttt{next()} $\rightarrow$ 96-bit nonce built from the counter and fixed prefix.
+\end{itemize}
+
+This yields a unique nonce per frame until the counter wraps (an event considered beyond practical usage limits).
+
+\subsection{AEAD Wrapper Functions}
+
+The functions:
+
+\begin{lstlisting}
+pub fn aead_seal(key: &[u8; 32], nonce12: &[u8; 12],
+                 plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>>
+
+pub fn aead_open(key: &[u8; 32], nonce12: &[u8; 12],
+                 ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>>
+\end{lstlisting}
+
+wrap the underlying \texttt{ChaCha20Poly1305} implementation, mapping errors into \texttt{anyhow::Error} with clear messages.
+
+\section{Framing (frame.rs)}
+
+The framing layer defines a record format:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+    \toprule
+    Field & Type      & Description \\
+    \midrule
+    \texttt{len}   & \texttt{u32} LE & Total length of \texttt{nonce} + \texttt{ct} \\
+    \texttt{nonce} & \texttt{u64} LE & Per-frame nonce (counter) \\
+    \texttt{ct}    & bytes           & Ciphertext from AEAD \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\texttt{write\_frame} and \texttt{read\_frame} are implemented in terms of \texttt{AsyncWriteExt} and \texttt{AsyncReadExt} and bail out on short reads or invalid lengths.
+
+\section{Dilithium Signature Helpers (sig.rs)}
+
+\texttt{sig.rs} provides a thin abstraction over the \texttt{dilithium2} crate:
+
+\begin{lstlisting}
+pub fn sign_detached(msg: &[u8], sk_bytes: &[u8]) -> Result<Vec<u8>> { ... }
+
+pub fn verify_detached(msg: &[u8], sig: &[u8], pk_bytes: &[u8]) -> Result<()> { ... }
+\end{lstlisting}
+
+A unit test checks round-trip correctness, verifying that a signature on \texttt{"QuantumSafe-SMB-Link"} under a freshly generated keypair will be accepted.
+
+In future iterations, these functions can be used to sign the handshake transcript, providing mutual authentication.
+
+\section{Legacy Crypto Helpers (crypto.rs)}
+
+\texttt{crypto.rs} contains earlier AEAD and HKDF helper functions that are superseded by \texttt{aead.rs}. They serve as reference for the evolution of the design and are kept for completeness.
+
+% =========================================
+%           CHAPTER 6: PERFORMANCE
+% =========================================
+
+\chapter{Performance Considerations}
+\label{chap:performance}
+
+\section{Benchmarking Methodology}
+
+To evaluate the performance of \qsl{}, the following methodology is suggested:
+
+\begin{itemize}
+    \item Run micro-benchmarks for:
+    \begin{itemize}
+        \item \Kyber{} key generation, encapsulation, and decapsulation.
+        \item X25519 key generation and shared-secret computation.
+        \item AEAD sealing and opening for typical SMB frame sizes (e.g., 4~KiB, 16~KiB).
+    \end{itemize}
+    \item Measure end-to-end handshake latency between tunnel endpoints.
+    \item Measure SMB file transfer throughput over:
+    \begin{enumerate}
+        \item Raw TCP (baseline).
+        \item Classical-only (if implemented).
+        \item Hybrid mode (\XDH{} + \Kyber{}).
+        \item Pure \Kyber{} mode.
+    \end{enumerate}
+\end{itemize}
+
+\section{Example Result Tables}
+
+\subsection{Primitive-Level Benchmarks}
+
+\begin{table}[H]
+    \centering
+    \caption{Example primitive-level benchmark structure (fill with measured values).}
+    \begin{tabular}{@{}lrr@{}}
+        \toprule
+        Operation & Mean time (\si{\micro\second}) & Std.\ dev. (\si{\micro\second}) \\
+        \midrule
+        Kyber-768 KeyGen    & -- & -- \\
+        Kyber-768 Encaps    & -- & -- \\
+        Kyber-768 Decaps    & -- & -- \\
+        X25519 KeyGen       & -- & -- \\
+        X25519 SharedSecret & -- & -- \\
+        \ChaCha{} Seal 4~KiB & -- & -- \\
+        \ChaCha{} Open 4~KiB & -- & -- \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:primitive-bench}
+\end{table}
+
+\subsection{Handshake and SMB Throughput}
+
+\begin{table}[H]
+    \centering
+    \caption{Example handshake and throughput benchmark structure.}
+    \begin{tabular}{@{}lrr@{}}
+        \toprule
+        Mode & Handshake latency (ms) & Throughput (MB/s) \\
+        \midrule
+        Raw TCP                & 0   & -- \\
+        Classical-only tunnel  & --  & -- \\
+        Hybrid (\XDH{} + \Kyber{}) & --  & -- \\
+        Pure \Kyber{}          & --  & -- \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:throughput-bench}
+\end{table}
+
+You can fill these tables with actual values obtained from experiments.
+
+\section{Qualitative Discussion}
+
+Even without precise numbers, we can predict several trends:
+
+\begin{itemize}
+    \item \textbf{Handshake overhead:} Post-quantum key establishment adds computational cost and increases handshake message sizes due to larger keys and ciphertexts. However, this cost is paid only once per connection.
+    \item \textbf{Steady-state performance:} After the handshake, performance is dominated by \ChaCha{} AEAD and I/O. The PQ component does not affect steady-state throughput.
+    \item \textbf{Hybrid vs PQ-only:} Hybrid mode performs both X25519 and \Kyber{} operations, roughly doubling the cost of key establishment. This is acceptable for connection-oriented SMB usage but should be acknowledged.
+\end{itemize}
+
+% =========================================
+%           CHAPTER 7: SECURITY
+% =========================================
+
+\chapter{Security Analysis}
+\label{chap:security}
+
+\section{Security Goals Recap}
+
+The handshake aims to provide:
+
+\begin{itemize}
+    \item Confidentiality and integrity of SMB data via AEAD.
+    \item Post-quantum security of session keys (due to \Kyber{}).
+    \item Forward secrecy via ephemeral keys.
+    \item Resistance to downgrade attacks.
+\end{itemize}
+
+\section{Hybrid Security}
+
+In hybrid mode, the session key is derived from both classical and post-quantum shared secrets:
+
+\[
+    \textsf{IKM} = ss_{\text{classical}} \,\|\, ss_{\text{pq}}.
+\]
+
+HKDF with a transcript-based salt extracts a pseudorandom key used to derive traffic keys. Assuming HKDF behaves as a secure key derivation function and at least one of the shared secrets remains unpredictable to the adversary, the derived keys remain secure.
+
+Thus, hybrid mode provides:
+
+\begin{itemize}
+    \item Classical security if \Kyber{} is later broken but X25519 remains secure.
+    \item Post-quantum security if X25519 is broken (e.g., by quantum computers) but \Kyber{} remains secure.
+\end{itemize}
+
+\section{Transcript Binding and Downgrade Resistance}
+
+Because the transcript hash includes:
+
+\begin{itemize}
+    \item Both parties' random nonces.
+    \item All public keys and ciphertexts.
+    \item The encoded capabilities and chosen suite.
+\end{itemize}
+
+any modification to these elements by an active attacker will lead to mismatched transcripts and thus mismatched session keys. As a result, AEAD decryption will fail and the connection will not succeed.
+
+The \texttt{pq\_required} flag further limits downgrade risk: if a client requires PQ, the server must choose a suite with a PQ-capable KEM, or abort.
+
+When Dilithium signatures are incorporated over the handshake transcript, an active attacker will be cryptographically prevented from altering the transcript without detection. This is discussed as future work.
+
+\section{Forward Secrecy}
+
+Forward secrecy is achieved through:
+
+\begin{itemize}
+    \item Fresh X25519 ephemeral secrets per handshake.
+    \item Fresh \Kyber{} keypairs per handshake (as implemented in \texttt{kem.rs}).
+\end{itemize}
+
+Compromise of long-term keys (e.g., Dilithium signing keys) does not reveal past session keys, assuming ephemeral secrets are erased after use.
+
+\section{Implementation Considerations}
+
+\subsection{Randomness}
+
+All keys and nonces use \texttt{OsRng}. The security of the protocol relies on the OS-provided CSPRNG. In production, entropy sources and failure modes should be carefully audited.
+
+\subsection{Error Handling and Side Channels}
+
+The use of \texttt{anyhow} yields user-friendly error messages. Care should be taken not to expose internal state or sensitive values in error messages in production. Also, while the underlying PQ libraries aim to be side-channel resistant, a full side-channel analysis is outside the scope of this course project.
+
+\subsection{Denial-of-Service}
+
+Because the server allocates buffers and performs expensive operations after reading the handshake, large or malformed messages could be used for DoS attacks. The implementation mitigates this with \texttt{MAX\_HANDSHAKE\_LEN}, rejecting handshakes exceeding a reasonable size.
+
+% =========================================
+%           CHAPTER 8: CONCLUSION
+% =========================================
+
+\chapter{Conclusion and Future Work}
+\label{chap:conclusion}
+
+This report has presented \qsl{}, a Rust-based prototype of a post-quantum hybrid tunnel for SMB. The project demonstrates how NIST-standardized primitives such as \Kyber{} and \Dilithium{} can be integrated into a practical handshake and key schedule, complementing classical X25519 to provide hybrid security.
+
+From a migration perspective, the design shows that:
+
+\begin{itemize}
+    \item Hybrid key establishment can be cleanly added around existing application protocols like SMB without modifying SMB itself.
+    \item Capability negotiation and a transcript-based key schedule offer a path to incremental deployment and downgrade resistance.
+    \item The implementation overhead is modest, especially in Rust, where strong type-safety and crate ecosystems simplify cryptographic plumbing.
+\end{itemize}
+
+Future work includes:
+
+\begin{itemize}
+    \item Integrating Dilithium signatures into the handshake for full authentication.
+    \item Extending the capability negotiation to support multiple PQ parameter sets and other KEM/signature families.
+    \item Running extensive benchmarks across platforms and SMB workloads, and optimizing TCP buffering and framing.
+    \item Hardening the codebase with configuration files, logging policies, and tests against malformed inputs.
+\end{itemize}
+
+\clearpage
+
+% =========================================
+%               mainGRAPHY
+% =========================================
+
+\begin{thebibliography}{9}
+
+\bibitem{nist-mlkem}
+NIST.
+\emph{FIPS 203: Module-Lattice-Based Key-Encapsulation Mechanism Standard}.
+2024.
+
+\bibitem{nist-mldsa}
+NIST.
+\emph{FIPS 204: Module-Lattice-Based Digital Signature Standard}.
+2024.
+
+\bibitem{bernstein-chacha20}
+D.~J. Bernstein.
+\emph{The ChaCha20-Poly1305 Authenticated Encryption}.
+2015.
+
+\bibitem{rfc8439}
+Y.~Nir and A.~Langley.
+\emph{ChaCha20 and Poly1305 for IETF Protocols}.
+RFC 8439, 2018.
+
+\bibitem{x25519}
+D.~J. Bernstein.
+\emph{Curve25519: high-speed elliptic-curve Diffie-Hellman}.
+2006.
+
+\end{thebibliography}
+
+
+
+% =========================================
+%                 APPENDICES
+% =========================================
+
+\appendix
+
+% -----------------------------------------
+%           APPENDIX A: WIRE FORMAT
+% -----------------------------------------
+
+\chapter{Wire Formats}
+\label{app:wire}
+
+This appendix specifies the on-the-wire layout of all handshake messages.
+
+\section{ClientHello}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+    \toprule
+    Field & Type         & Description \\
+    \midrule
+    Magic         & 4 bytes     & \texttt{"QSLH"} \\
+    Version       & u16 (BE)    & Protocol version (1) \\
+    Length        & u16 (BE)    & Payload length \\
+    Random        & 32 bytes    & Client random nonce \\
+    X25519 pk     & 32 bytes    & Client public key (all zeros if not hybrid) \\
+    Kyber pk len  & u16 (BE)    & Length of Kyber public key \\
+    Kyber pk      & variable    & Kyber public key bytes \\
+    Caps len      & u16 (BE)    & Length of capabilities TLV block \\
+    Caps (TLVs)   & variable    & TLVs with KEM list, SIG list, hybrid, pq\_required \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\section{ServerHello}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+    \toprule
+    Field & Type         & Description \\
+    \midrule
+    Magic           & 4 bytes   & \texttt{"QSLS"} \\
+    Version         & u16 (BE)  & Protocol version (1) \\
+    Length          & u16 (BE)  & Payload length \\
+    Random          & 32 bytes  & Server random nonce \\
+    X25519 pk       & 32 bytes  & Server X25519 public key (zeros if not hybrid) \\
+    Kyber ct len    & u16 (BE)  & Length of Kyber ciphertext \\
+    Kyber ct        & variable  & Kyber ciphertext \\
+    Suite len       & u16 (BE)  & Length of chosen-suite encoding \\
+    Chosen suite    & variable  & Encoded KEM+SIG+hybrid selection \\
+    Sig len         & u16 (BE)  & Length of signature (0 if unused) \\
+    Signature       & variable  & Dilithium signature over transcript (future) \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\section{Encrypted Data Frame}
+
+Data frames follow the format described in \Cref{chap:implementation}: \texttt{len} (u32 LE), \texttt{nonce} (u64 LE), and ciphertext bytes.
+
+% -----------------------------------------
+%          APPENDIX B: CLI USAGE
+% -----------------------------------------
+
+\chapter{CLI Usage}
+\label{app:cli}
+
+\section{Server Mode Example}
+
+\begin{verbatim}
+QuantumSafe-SMB-Link server \
+    --listen 0.0.0.0:4444 \
+    --forward 10.0.0.5:445 \
+    --hybrid \
+    --pq-required
+\end{verbatim}
+
+\section{Client Mode Example}
+
+\begin{verbatim}
+QuantumSafe-SMB-Link client \
+    --listen 127.0.0.1:1445 \
+    --dial 192.0.2.10:4444 \
+    --hybrid \
+    --pq-required
+\end{verbatim}
+
+In this configuration, SMB clients can connect to \texttt{127.0.0.1:1445}, and their traffic will be tunneled securely to the SMB server at \texttt{10.0.0.5:445} via the post-quantum-aware tunnel at \texttt{192.0.2.10:4444}.
+
+\end{document}
